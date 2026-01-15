@@ -74,8 +74,8 @@ uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type="xlsx")
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
     
-    # Flexible column name check for 'Consideration value' (Case sensitivity)
-    cons_col = next((c for c in df.columns if c.lower() == 'consideration value'), None)
+    # Flexible column name check for 'Consideration Value' (Case sensitivity)
+    cons_col = next((c for c in df.columns if c.lower() == 'Consideration Value'), None)
     prop_col = next((c for c in df.columns if c.lower() == 'property'), None)
     
     if "Property Description" in df.columns and cons_col and prop_col:
