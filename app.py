@@ -4,42 +4,33 @@ import re
 import io
 from openpyxl.styles import Alignment, PatternFill, Border, Side
 
-# --- NEW: PROPERTY DATABASE ---
-# Add your property details here. The key must match the name in your Excel 'property' column.
-PROPERTY_DETAILS = {
-    "Example Residency": {
-        "Amenities": "Gym, Pool, Clubhouse",
-        "Towers": 4,
-        "Floors": 22,
-        "Units": 450,
-        "Possession": "Dec 2027"
-    },
-    # Add more properties as needed
-}
-
-def get_property_metadata(prop_name, field):
-    """Helper to fetch property details from our dictionary."""
-    details = PROPERTY_DETAILS.get(prop_name, {})
-    return details.get(field, "N/A")
-
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
+    
+    # 1. Cleanup: Standardize spaces
     text = " ".join(str(text).split())
     text = text.replace(' ,', ',').replace(', ', ',')
     
+    # Define flexible regex patterns for units
     m_unit = r'(?:चौ\.?\s*मी\.?|चौरस\s*मी[टत]र|sq\.?\s*m(?:tr)?\.?)'
     f_unit = r'(?:चौ\.?\s*फू\.?|चौरस\s*फु[टत]|sq\.?\s*f(?:t)?\.?)'
     total_keywords = r'(?:ए[ककु]ण\s*क्षेत्र|क्षेत्रफळ|total\s*area)'
     
+    # --- STEP 1: METRIC EXTRACTION (SQ.MT) ---
     m_segments = re.split(f'(\d+\.?\d*)\s*{m_unit}', text, flags=re.IGNORECASE)
     m_vals = []
+    
     for i in range(1, len(m_segments), 2):
         val = float(m_segments[i])
         context_before = m_segments[i-1].lower()
+        
+        # FIX: Added "पार्कींग" (alternate spelling) to the exclusion list
         parking_keywords = ["पार्किंग", "पार्कींग", "parking"]
         is_parking = any(word in context_before for word in parking_keywords)
-        if 0 < val < 500 and not is_parking:
-            m_vals.append(val)
+        
+        if 0 < val < 500:
+            if not is_parking:
+                m_vals.append(val)
     
     if m_vals:
         t_m_match = re.search(rf'{total_keywords}\s*:?\s*(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE)
@@ -47,15 +38,19 @@ def extract_area_logic(text):
         if len(m_vals) > 1 and abs(m_vals[-1] - sum(m_vals[:-1])) < 1: return round(m_vals[-1], 3)
         return round(sum(m_vals), 3)
         
+    # --- STEP 2: FALLBACK TO IMPERIAL (SQ.FT) ---
     f_segments = re.split(f'(\d+\.?\d*)\s*{f_unit}', text, flags=re.IGNORECASE)
     f_vals = []
     for i in range(1, len(f_segments), 2):
         val = float(f_segments[i])
         context_before = f_segments[i-1].lower()
+        
         parking_keywords = ["पार्किंग", "पार्कींग", "parking"]
         is_parking = any(word in context_before for word in parking_keywords)
-        if 0 < val < 5000 and not is_parking:
-            f_vals.append(val)
+        
+        if 0 < val < 5000:
+            if not is_parking:
+                f_vals.append(val)
                 
     if f_vals:
         t_f_match = re.search(rf'{total_keywords}\s*:?\s*(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE)
@@ -74,8 +69,13 @@ def determine_config(area, t1, t2, t3):
 def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     worksheet = writer.sheets[sheet_name]
-    center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
-    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+    center_align = Alignment(horizontal='center', vertical='center')
+    thin_border = Border(
+        left=Side(style='thin', color='000000'),
+        right=Side(style='thin', color='000000'),
+        top=Side(style='thin', color='000000'),
+        bottom=Side(style='thin', color='000000')
+    )
     colors = ["A2D2FF", "FFD6A5", "CAFFBF", "FDFFB6", "FFADAD", "BDB2FF", "9BF6FF"]
     
     color_idx = 0
@@ -95,23 +95,14 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
             fill = PatternFill(start_color=colors[color_idx % len(colors)], end_color=colors[color_idx % len(colors)], fill_type="solid")
             for col in range(1, len(df.columns) + 1):
                 worksheet.cell(row=i, column=col).fill = fill
-            
             if curr_prop != next_prop:
-                # Merge logic for Property and New Metadata Columns (Columns 1, 10, 11, 12, 13, 14)
-                # We merge Property name and the new details which are same for the whole property
-                for col_to_merge in [1, 10, 11, 12, 13, 14]:
-                    if i >= start_row_prop:
-                        worksheet.merge_cells(start_row=start_row_prop, start_column=col_to_merge, end_row=i, end_column=col_to_merge)
-                
+                if i > start_row_prop: worksheet.merge_cells(start_row=start_row_prop, start_column=1, end_row=i, end_column=1)
                 color_idx += 1
                 start_row_prop = i + 1
-
-            # Merge logic for Configuration (Column 2)
             curr_cfg_key = [df.iloc[i-2, 0], df.iloc[i-2, 1]]
             next_cfg_key = [df.iloc[i-1, 0], df.iloc[i-1, 1]] if i-1 < len(df) else None
             if curr_cfg_key != next_cfg_key:
-                if i >= start_row_cfg:
-                    worksheet.merge_cells(start_row=start_row_cfg, start_column=2, end_row=i, end_column=2)
+                if i > start_row_cfg: worksheet.merge_cells(start_row=start_row_cfg, start_column=2, end_row=i, end_column=2)
                 start_row_cfg = i + 1
 
 # --- STREAMLIT UI ---
@@ -144,16 +135,7 @@ if uploaded_file:
                 Mode_APR=('APR', lambda x: x.mode().iloc[0] if not x.mode().empty else 0),
                 Property_Count=(prop_col, 'count')
             ).reset_index()
-            
             summary.columns = ['Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property']
-            
-            # --- NEW: ADDING THE METADATA COLUMNS ---
-            summary['Amenities'] = summary['Property'].apply(lambda x: get_property_metadata(x, 'Amenities'))
-            summary['Towers'] = summary['Property'].apply(lambda x: get_property_metadata(x, 'Towers'))
-            summary['Floors'] = summary['Property'].apply(lambda x: get_property_metadata(x, 'Floors'))
-            summary['Units'] = summary['Property'].apply(lambda x: get_property_metadata(x, 'Units'))
-            summary['Possession'] = summary['Property'].apply(lambda x: get_property_metadata(x, 'Possession'))
-
             summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']] = summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']].round(3)
 
             output = io.BytesIO()
@@ -163,5 +145,3 @@ if uploaded_file:
             
             st.success("Analysis Complete!")
             st.download_button(label="📥 Download Formatted Excel Report", data=output.getvalue(), file_name="Property_Analysis_Professional.xlsx")
-    else:
-        st.error("Missing required columns: Property Description, Consideration Value, or Property.")
