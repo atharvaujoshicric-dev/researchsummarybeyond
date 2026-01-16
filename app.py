@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 import io
-from openpyxl.styles import Alignment, PatternFill
+from openpyxl.styles import Alignment, PatternFill, Border, Side
 
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
@@ -48,58 +48,72 @@ def determine_config(area, t1, t2, t3):
     elif area < t3: return "3 BHK"
     else: return "4 BHK"
 
-def apply_excel_formatting(df, writer, sheet_name):
+def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     worksheet = writer.sheets[sheet_name]
-    center_align = Alignment(horizontal='center', vertical='center')
     
-    # Professional light colors for background highlighting
-    colors = ["E7F3FF", "F2F2F2", "FFF4E5", "E8F5E9", "F3E5F5", "FFFDE7"]
+    # Define styles
+    center_align = Alignment(horizontal='center', vertical='center')
+    thin_border = Border(
+        left=Side(style='thin', color='000000'),
+        right=Side(style='thin', color='000000'),
+        top=Side(style='thin', color='000000'),
+        bottom=Side(style='thin', color='000000')
+    )
+    
+    # Brighter colors for property groups
+    colors = ["A2D2FF", "FFD6A5", "CAFFBF", "FDFFB6", "FFADAD", "BDB2FF", "9BF6FF"]
     
     color_idx = 0
-    start_row = 2
-    
-    for i in range(2, len(df) + 2):
-        curr_prop = df.iloc[i-2, 0] # Property Column
-        next_prop = df.iloc[i-1, 0] if i-1 < len(df) else None
-        
-        # Apply color to the current row
-        fill = PatternFill(start_color=colors[color_idx % len(colors)], end_color=colors[color_idx % len(colors)], fill_type="solid")
-        for col in range(1, len(df.columns) + 1):
-            worksheet.cell(row=i, column=col).fill = fill
-
-        if curr_prop != next_prop:
-            # Merge Property Column
-            if i > start_row:
-                worksheet.merge_cells(start_row=start_row, start_column=1, end_row=i, end_column=1)
-                worksheet.cell(row=start_row, column=1).alignment = center_align
-            
-            # Reset color index for the next property group
-            color_idx += 1
-            start_row = i + 1
-
-    # Merge Configuration Column logic (Nested within Property)
+    start_row_prop = 2
     start_row_cfg = 2
-    for i in range(2, len(df) + 2):
-        curr_key = [df.iloc[i-2, 0], df.iloc[i-2, 1]]
-        next_key = [df.iloc[i-1, 0], df.iloc[i-1, 1]] if i-1 < len(df) else None
-        if curr_key != next_key:
-            if i > start_row_cfg:
-                worksheet.merge_cells(start_row=start_row_cfg, start_column=2, end_row=i, end_column=2)
-                worksheet.cell(row=start_row_cfg, column=2).alignment = center_align
-            start_row_cfg = i + 1
+    
+    # Iterate through rows (1-based index for openpyxl)
+    for i in range(1, worksheet.max_row + 1):
+        for j in range(1, worksheet.max_column + 1):
+            cell = worksheet.cell(row=i, column=j)
+            cell.alignment = center_align
+            if is_summary:
+                cell.border = thin_border
+
+    if is_summary:
+        for i in range(2, len(df) + 2):
+            curr_prop = df.iloc[i-2, 0]
+            next_prop = df.iloc[i-1, 0] if i-1 < len(df) else None
+            
+            # Apply background color
+            fill = PatternFill(start_color=colors[color_idx % len(colors)], 
+                               end_color=colors[color_idx % len(colors)], 
+                               fill_type="solid")
+            for col in range(1, len(df.columns) + 1):
+                worksheet.cell(row=i, column=col).fill = fill
+
+            # Merge Property Column
+            if curr_prop != next_prop:
+                if i > start_row_prop:
+                    worksheet.merge_cells(start_row=start_row_prop, start_column=1, end_row=i, end_column=1)
+                color_idx += 1
+                start_row_prop = i + 1
+
+            # Merge Configuration Column (Nested)
+            curr_cfg_key = [df.iloc[i-2, 0], df.iloc[i-2, 1]]
+            next_cfg_key = [df.iloc[i-1, 0], df.iloc[i-1, 1]] if i-1 < len(df) else None
+            if curr_cfg_key != next_cfg_key:
+                if i > start_row_cfg:
+                    worksheet.merge_cells(start_row=start_row_cfg, start_column=2, end_row=i, end_column=2)
+                start_row_cfg = i + 1
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="Real Estate Analytics Dashboard", layout="wide")
-st.title("🏠 Property Analytics with Unique Project Coloring")
+st.set_page_config(page_title="Real Estate Dashboard", layout="wide")
+st.title("🏠 Property Data Extractor & Professional Report")
 
-st.sidebar.header("Settings")
+st.sidebar.header("Calculation Settings")
 loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
 t1 = st.sidebar.number_input("1 BHK Threshold (<)", value=600)
 t2 = st.sidebar.number_input("2 BHK Threshold (<)", value=850)
 t3 = st.sidebar.number_input("3 BHK Threshold (<)", value=1100)
 
-uploaded_file = st.file_uploader("Upload Raw Excel File (.xlsx)", type="xlsx")
+uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type="xlsx")
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
@@ -107,7 +121,7 @@ if uploaded_file:
     desc_col, cons_col, prop_col = clean_cols.get('property description'), clean_cols.get('consideration value'), clean_cols.get('property')
     
     if desc_col and cons_col and prop_col:
-        with st.spinner('Calculating and Coloring Report...'):
+        with st.spinner('Calculating and Formatting...'):
             df['Carpet Area (SQ.MT)'] = df[desc_col].apply(extract_area_logic)
             df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
             df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
@@ -128,11 +142,13 @@ if uploaded_file:
 
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='Raw Data', index=False)
-                apply_excel_formatting(summary, writer, 'Summary')
+                # Apply center alignment to Raw Data
+                apply_excel_formatting(df, writer, 'Raw Data', is_summary=False)
+                # Apply full formatting (borders, merge, color, align) to Summary
+                apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
             
-            st.success("Analysis Complete!")
+            st.success("Formatting Complete!")
             st.dataframe(summary.head(20))
-            st.download_button(label="📥 Download Colored Excel Report", data=output.getvalue(), file_name="Property_Summary_Colored.xlsx")
+            st.download_button(label="📥 Download Formatted Excel Report", data=output.getvalue(), file_name="Property_Analysis_Professional.xlsx")
     else:
-        st.error("Missing required columns.")
+        st.error("Missing required columns: 'Property Description', 'Property', 'Consideration Value'.")
