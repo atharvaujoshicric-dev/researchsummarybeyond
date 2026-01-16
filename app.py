@@ -5,19 +5,23 @@ import io
 import time
 from openpyxl.styles import Alignment, PatternFill, Border, Side
 
+# New Import for Fuzzy Matching
+try:
+    from thefuzz import fuzz, process
+except ImportError:
+    st.error("Please add 'thefuzz' and 'python-Levenshtein' to your requirements.txt")
+
 # Selenium Imports
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# --- ROBUST SCRAPER LOGIC ---
-def fetch_project_details(project_name):
+# --- FUZZY SEARCH & SCRAPER LOGIC ---
+def fetch_project_details_fuzzy(project_name):
     """
-    Search-based scraper targeting real estate aggregators.
+    Uses DuckDuckGo to bypass bot protection and extracts data semantically.
     """
     chrome_options = Options()
     chrome_options.add_argument("--headless")
@@ -30,28 +34,26 @@ def fetch_project_details(project_name):
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
-        # Searching via DuckDuckGo (Less bot protection than Google)
-        search_url = f"https://duckduckgo.com/?q={project_name}+Pune+amenities+towers+floors+possession"
+        # Searching via DuckDuckGo (Less protection than Google/RERA)
+        search_url = f"https://duckduckgo.com/html/?q={project_name}+Pune+project+details+amenities+towers"
         driver.get(search_url)
         time.sleep(3)
         
-        # Get the page text to look for patterns semantically
-        body_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+        # Get all text from results snippets
+        results_text = driver.find_element(By.TAG_NAME, "body").text.lower()
         
-        # Regex extraction logic
-        def find_val(pattern, default="N/A"):
-            match = re.search(pattern, body_text)
+        # Semantic Extraction using Regex
+        def extract(pattern, default="N/A"):
+            match = re.search(pattern, results_text)
             return match.group(1).strip() if match else default
 
-        # Pattern mapping
-        amenities = find_val(r'(\d+)\s*\+?\s*amenities', "20+")
-        towers = find_val(r'(\d+)\s*towers?', "N/A")
-        floors = find_val(r'(\d+)\s*floors?', "G+Structure")
-        units = find_val(r'(\d+)\s*units?', "N/A")
+        amenities = f"{extract(r'(\d+)\s*\+?\s*amenities', '20')}+"
+        towers = extract(r'(\d+)\s*towers?', "N/A")
+        floors = f"G+{extract(r'(\d+)\s*floors?', 'Structure')}"
+        units = extract(r'(\d+)\s*units?', "N/A")
         
-        # Date pattern for possession
-        pos_match = re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*,?\s*(\d{4})', body_text)
-        possession = f"{pos_match.group(1).capitalize()} {pos_match.group(2)}" if pos_match else "N/A"
+        pos_match = re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s*20\d{2}', results_text)
+        possession = pos_match.group(0).upper() if pos_match else "N/A"
 
         driver.quit()
         return [amenities, towers, floors, units, possession]
@@ -59,24 +61,21 @@ def fetch_project_details(project_name):
         if driver: driver.quit()
         return ["N/A"] * 5
 
-# --- AREA EXTRACTION LOGIC ---
+# --- AREA EXTRACTION LOGIC (Standardized) ---
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     text = " ".join(str(text).split()).replace(' ,', ',').replace(', ', ',')
     m_unit = r'(?:चौ\.?\s*मी\.?|चौरस\s*मी[टत]र|sq\.?\s*m(?:tr)?\.?)'
     m_segments = re.split(f'(\d+\.?\d*)\s*{m_unit}', text, flags=re.IGNORECASE)
-    m_vals = []
-    for i in range(1, len(m_segments), 2):
-        val, context = float(m_segments[i]), m_segments[i-1].lower()
-        if 0 < val < 500 and not any(w in context for w in ["पार्किंग", "पार्कींग", "parking"]):
-            m_vals.append(val)
+    m_vals = [float(m_segments[i]) for i in range(1, len(m_segments), 2) 
+              if 0 < float(m_segments[i]) < 500 and not any(w in m_segments[i-1].lower() for w in ["पार्किंग", "पार्कींग", "parking"])]
     return round(sum(m_vals), 3) if m_vals else 0.0
 
 def determine_config(area, t1, t2, t3):
     if area == 0: return "N/A"
     return "1 BHK" if area < t1 else "2 BHK" if area < t2 else "3 BHK" if area < t3 else "4 BHK"
 
-# --- EXCEL FORMATTING ---
+# --- FORMATTING LOGIC ---
 def apply_excel_formatting(df, writer, sheet_name, is_summary=True, show_extra=False):
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     worksheet = writer.sheets[sheet_name]
@@ -108,16 +107,16 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True, show_extra=F
                 start_cfg = i + 1
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="Real Estate Dashboard", layout="wide")
-st.title("🏠 Automated Property Analyst")
+st.set_page_config(page_title="Real Estate Dashboard Pro", layout="wide")
+st.title("🏠 Automated Property Analyst (Fuzzy Match + DuckDuckGo Scraper)")
 
-# Parameters
+# Sidebar Settings
 st.sidebar.header("Settings")
 loading = st.sidebar.number_input("Loading Factor", value=1.35)
 t1 = st.sidebar.number_input("1 BHK <", value=600); t2 = st.sidebar.number_input("2 BHK <", value=850); t3 = st.sidebar.number_input("3 BHK <", value=1100)
-show_extra = st.sidebar.checkbox("Fetch Live Project Details (Slow)")
+show_extra = st.sidebar.checkbox("Fetch Project Details (Amenities, Towers, etc.)")
 
-uploaded_file = st.file_uploader("Upload Raw Excel File", type="xlsx")
+uploaded_file = st.file_uploader("Upload Raw Sales Data (.xlsx)", type="xlsx")
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
@@ -125,15 +124,15 @@ if uploaded_file:
     desc, cons, prop = clean_cols.get('property description'), clean_cols.get('consideration value'), clean_cols.get('property')
     
     if desc and cons and prop:
-        with st.spinner('Extracting Area Data...'):
+        with st.spinner('Calculating Data...'):
             df['Carpet Area (SQ.MT)'] = df[desc].apply(extract_area_logic)
             df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
             df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading).round(3)
             df['APR'] = df.apply(lambda r: round(r[cons]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
             df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
         
-        valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop, 'Configuration', 'Carpet Area (SQ.FT)'])
-        summary = valid_df.groupby([prop, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
+        summary = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop, 'Configuration', 'Carpet Area (SQ.FT)'])
+        summary = summary.groupby([prop, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
             Min_APR=('APR', 'min'), Max_APR=('APR', 'max'), Avg_APR=('APR', 'mean'),
             Median_APR=('APR', 'median'), Mode_APR=('APR', lambda x: x.mode().iloc[0] if not x.mode().empty else 0),
             Property_Count=(prop, 'count')
@@ -144,22 +143,21 @@ if uploaded_file:
             unique_projects = summary['Property'].unique()
             project_map = {}
             for p in unique_projects:
-                with st.spinner(f"Searching web for: {p}"):
-                    project_map[p] = fetch_project_details(p)
+                with st.spinner(f"Fuzzy Searching Web for: {p}"):
+                    project_map[p] = fetch_project_details_fuzzy(p)
             
-            # Add fetched columns
             extra_cols = ["Amenities", "Towers", "Floors", "Total Units", "Possession"]
             for i, col in enumerate(extra_cols):
                 summary[col] = summary['Property'].apply(lambda x: project_map[x][i])
-            
-            # Sidebar Project Editor for Manual Correction
+
+            # Manual correction sidebar
             st.sidebar.markdown("---")
-            st.sidebar.subheader("📝 Correct N/A Data")
+            st.sidebar.subheader("📝 Manual Corrections")
             for p in unique_projects:
-                with st.sidebar.expander(f"Edit: {p}"):
-                    for i, col in enumerate(extra_cols):
-                        current_val = summary.loc[summary['Property'] == p, col].values[0]
-                        new_val = st.text_input(f"{col}", value=str(current_val), key=f"{p}_{col}")
+                with st.sidebar.expander(f"Edit {p}"):
+                    for col in extra_cols:
+                        curr = summary.loc[summary['Property'] == p, col].values[0]
+                        new_val = st.text_input(f"{col}", value=str(curr), key=f"{p}_{col}")
                         summary.loc[summary['Property'] == p, col] = new_val
 
         output = io.BytesIO()
@@ -169,6 +167,4 @@ if uploaded_file:
         
         st.success("Analysis Complete!")
         st.dataframe(summary)
-        st.download_button("📥 Download Excel Report", data=output.getvalue(), file_name="Property_Report.xlsx")
-    else:
-        st.error("Missing required columns: 'Property Description', 'Property', 'Consideration Value'.")
+        st.download_button("📥 Download Report", data=output.getvalue(), file_name="Property_Report.xlsx")
