@@ -11,21 +11,24 @@ def extract_area_logic(text):
     text = " ".join(str(text).split())
     text = text.replace(' ,', ',').replace(', ', ',')
     
-    # 2. Focus Logic: Ignore land/survey area
-    # We look for where the building or flat description starts
-    focus_keywords = r'(?:इमारतीमधील|विंग|सदनिका|फ्लॅट|flat|unit|apartment)'
-    parts = re.split(focus_keywords, text, maxsplit=1, flags=re.IGNORECASE)
+    # 2. Refined Focus Logic
+    # We look for the absolute start of the building/unit description to cut off land/plot data.
+    # Added "टॉवर", "प्रोजेक्ट", "युनिट" to catch the specific project details.
+    focus_keywords = r'(?:इमारतीमधील|विंग|सदनिका|फ्लॅट|युनिट|टावर|टॉवर|प्रोजेक्टमधील|flat|unit|apartment|tower)'
+    parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
     
-    # If we found a flat/building mention, only look at text after that
-    relevant_text = parts[1] if len(parts) > 1 else parts[0]
+    # We take the LAST part of the split because the unit details 
+    # always come after the land and project description.
+    relevant_text = parts[-1] if len(parts) > 1 else parts[0]
     
     # Define regex patterns
     m_unit = r'(?:चौ\.?\s*मी\.?|चौरस\s*मी[टत]र|sq\.?\s*m(?:tr)?\.?)'
     f_unit = r'(?:चौ\.?\s*फू\.?|चौरस\s*फु[टत]|sq\.?\s*f(?:t)?\.?)'
     total_keywords = r'(?:ए[ककु]ण\s*क्षेत्र|क्षेत्रफळ|total\s*area)'
-    parking_keywords = ["पार्किंग", "पार्कींग", "parking"]
+    parking_keywords = ["पार्किंग", "पार्कींग", "parking", "पार्कीग"]
 
     # --- STEP 1: CHECK FOR EXPLICIT TOTAL (METRIC) ---
+    # Look for "Total Area" in the RELEVANT section only
     t_m_match = re.search(rf'{total_keywords}.*?(\d+\.?\d*)\s*{m_unit}', relevant_text, re.IGNORECASE)
     if t_m_match:
         return round(float(t_m_match.group(1)), 3)
@@ -36,14 +39,17 @@ def extract_area_logic(text):
     for i in range(1, len(m_segments), 2):
         val = float(m_segments[i])
         context_before = m_segments[i-1].lower()
+        
+        # Check for parking
         is_parking = any(word in context_before for word in parking_keywords)
         
-        # Filter: Exclude very large values that might still be land (e.g. > 500sqm)
-        if 0 < val < 500 and not is_parking:
+        # In residential units, individual components (carpet/balcony) 
+        # are almost never > 400 sq.mt. This filters out rogue plot areas.
+        if 0 < val < 450 and not is_parking:
             m_vals.append(val)
     
     if m_vals:
-        # Check if the last value is roughly the sum of previous values (to catch "Total" without keyword)
+        # Avoid double counting if the sum is presented at the end
         if len(m_vals) > 1 and abs(m_vals[-1] - sum(m_vals[:-1])) < 0.5:
             return round(m_vals[-1], 3)
         return round(sum(m_vals), 3)
@@ -59,7 +65,8 @@ def extract_area_logic(text):
         val = float(f_segments[i])
         context_before = f_segments[i-1].lower()
         is_parking = any(word in context_before for word in parking_keywords)
-        if 0 < val < 5000 and not is_parking:
+        
+        if 0 < val < 4500 and not is_parking:
             f_vals.append(val)
                 
     if f_vals:
@@ -165,4 +172,4 @@ if uploaded_file:
             st.success("Analysis Complete!")
             st.download_button(label="📥 Download Formatted Excel Report", data=output.getvalue(), file_name="Property_Analysis.xlsx")
     else:
-        st.error("Please ensure the Excel has 'Property', 'Property Description', and 'Consideration Value' columns.")
+        st.error("Ensure Excel has 'Property', 'Property Description', and 'Consideration Value' columns.")
