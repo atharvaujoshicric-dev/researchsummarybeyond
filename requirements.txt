@@ -1,6 +1,5 @@
 streamlit
 pandas
+geopy
+requests
 openpyxl
-selenium
-thefuzz
-python-Levenshtein
