@@ -1,147 +1,159 @@
 import streamlit as st
 import pandas as pd
-import re
-import io
-from openpyxl.styles import Alignment, PatternFill, Border, Side
+import googlemaps
+import requests
+import time
 
-def extract_area_logic(text):
-    if pd.isna(text) or text == "": return 0.0
+# --- SETUP ---
+st.set_page_config(page_title="Real Estate Proximity Dashboard", layout="wide")
+
+st.title("Project Proximity & Market Intelligence Dashboard")
+st.markdown("""
+Upload your society list, provide your project's location, and this tool will calculate distances and find market data (Ticket Size & Configurations).
+""")
+
+# --- SIDEBAR: API KEYS & INPUTS ---
+with st.sidebar:
+    st.header("Configuration")
+    gmaps_key = st.text_input("Google Maps API Key", type="password")
+    serp_api_key = st.text_input("SerpApi Key (for Price/Config search)", type="password", help="Get one at serpapi.com")
     
-    # 1. Cleanup: Standardize spaces
-    text = " ".join(str(text).split())
-    text = text.replace(' ,', ',').replace(', ', ',')
+    st.divider()
     
-    # Define flexible regex patterns for units
-    m_unit = r'(?:चौ\.?\s*मी\.?|चौरस\s*मी[टत]र|sq\.?\s*m(?:tr)?\.?)'
-    f_unit = r'(?:चौ\.?\s*फू\.?|चौरस\s*फु[टत]|sq\.?\s*f(?:t)?\.?)'
-    total_keywords = r'(?:ए[ककु]ण\s*क्षेत्र|क्षेत्रफळ|total\s*area)'
+    project_location = st.text_input("Enter Your Project's Google Maps Location", placeholder="e.g., Amanora Park Town, Hadapsar, Pune")
     
-    # --- STEP 1: METRIC EXTRACTION (SQ.MT) ---
-    m_segments = re.split(f'(\d+\.?\d*)\s*{m_unit}', text, flags=re.IGNORECASE)
-    m_vals = []
+    st.info("The tool will add 3 columns: 'Distance from project', 'Ticket Size', and 'Configurations'.")
+
+# --- FILE UPLOADER ---
+uploaded_file = st.file_uploader("Upload your Excel or CSV file", type=['csv', 'xlsx'])
+
+def get_market_data(society_name, locality, api_key):
+    """
+    Uses SerpApi to search for property details.
+    """
+    if not api_key:
+        return "N/A", "N/A"
     
-    for i in range(1, len(m_segments), 2):
-        val = float(m_segments[i])
-        context_before = m_segments[i-1].lower()
-        
-        # FIX: Added "पार्कींग" (alternate spelling) to the exclusion list
-        parking_keywords = ["पार्किंग", "पार्कींग", "parking"]
-        is_parking = any(word in context_before for word in parking_keywords)
-        
-        if 0 < val < 500:
-            if not is_parking:
-                m_vals.append(val)
+    query = f"{society_name} {locality} price configuration BHK"
+    search_url = "https://serpapi.com/search"
+    params = {
+        "engine": "google",
+        "q": query,
+        "api_key": api_key,
+        "num": 3  # Look at top 3 results
+    }
     
-    if m_vals:
-        t_m_match = re.search(rf'{total_keywords}\s*:?\s*(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE)
-        if t_m_match: return round(float(t_m_match.group(1)), 3)
-        if len(m_vals) > 1 and abs(m_vals[-1] - sum(m_vals[:-1])) < 1: return round(m_vals[-1], 3)
-        return round(sum(m_vals), 3)
+    try:
+        response = requests.get(search_url, params=params)
+        data = response.json()
         
-    # --- STEP 2: FALLBACK TO IMPERIAL (SQ.FT) ---
-    f_segments = re.split(f'(\d+\.?\d*)\s*{f_unit}', text, flags=re.IGNORECASE)
-    f_vals = []
-    for i in range(1, len(f_segments), 2):
-        val = float(f_segments[i])
-        context_before = f_segments[i-1].lower()
+        # This is a simplified logic to extract info from search snippets
+        # In a production environment, you might use LLMs to parse this text
+        snippets = " ".join([result.get("snippet", "") for result in data.get("organic_results", [])])
         
-        parking_keywords = ["पार्किंग", "पार्कींग", "parking"]
-        is_parking = any(word in context_before for word in parking_keywords)
+        # Placeholder extraction logic (Basic keyword search)
+        # In practice, these details are best fetched via specific Real Estate APIs if available
+        ticket_size = "Contact for Price"
+        if "Cr" in snippets or "Lakh" in snippets:
+            # Very basic extraction - improvement would involve Regex or LLM
+            words = snippets.split()
+            for i, word in enumerate(words):
+                if "Cr" in word or "Lakh" in word:
+                    ticket_size = f"{words[i-1]} {word}"
+                    break
+                    
+        config = "1, 2, 3 BHK" # Default fallback
+        if "4 BHK" in snippets: config = "2, 3, 4 BHK"
+        elif "3 BHK" in snippets: config = "2, 3 BHK"
         
-        if 0 < val < 5000:
-            if not is_parking:
-                f_vals.append(val)
+        return ticket_size, config
+    except:
+        return "Search Error", "Search Error"
+
+def process_data(df, gmaps, project_loc, serp_key):
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    distances = []
+    ticket_sizes = []
+    configs = []
+    
+    # Geocode the project location first
+    project_geo = gmaps.geocode(project_loc)
+    if not project_geo:
+        st.error("Could not find your project location. Please be more specific.")
+        return None
+    
+    origin_coords = project_geo[0]['geometry']['location']
+    
+    for index, row in df.iterrows():
+        society = str(row['society'])
+        locality = str(row['locality'])
+        city = str(row.get('city', ''))
+        
+        search_query = f"{society}, {locality}, {city}"
+        status_text.text(f"Processing: {society}...")
+        
+        # 1. Distance Calculation
+        try:
+            # Using Distance Matrix for accurate road distance
+            dist_result = gmaps.distance_matrix(project_loc, search_query, mode="driving")
+            if dist_result['rows'][0]['elements'][0]['status'] == 'OK':
+                dist_km = dist_result['rows'][0]['elements'][0]['distance']['text']
+                distances.append(dist_km)
+            else:
+                distances.append("Not Found")
+        except:
+            distances.append("Error")
+
+        # 2. Market Data (Ticket Size & Config)
+        t_size, cfg = get_market_data(society, locality, serp_key)
+        ticket_sizes.append(t_size)
+        configs.append(cfg)
+        
+        # Update progress
+        progress = (index + 1) / len(df)
+        progress_bar.progress(progress)
+        time.sleep(0.1) # Small delay to respect rate limits
+
+    df['Distance from project'] = distances
+    df['Ticket Size'] = ticket_sizes
+    df['Configurations'] = configs
+    
+    status_text.text("Processing Complete!")
+    return df
+
+# --- MAIN LOGIC ---
+if uploaded_file and gmaps_key and project_location:
+    if uploaded_file.name.endswith('.csv'):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
+    
+    st.write("### Original Data Preview", df.head())
+    
+    if st.button("Generate Dashboard Data"):
+        gmaps = googlemaps.Client(key=gmaps_key)
+        
+        with st.spinner("Fetching distances and market data..."):
+            result_df = process_data(df, gmaps, project_location, serp_api_key)
+            
+            if result_df is not None:
+                st.success("Successfully updated all records!")
+                st.write("### Updated Data", result_df)
                 
-    if f_vals:
-        t_f_match = re.search(rf'{total_keywords}\s*:?\s*(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE)
-        if t_f_match: return round(float(t_f_match.group(1)) / 10.764, 3)
-        if len(f_vals) > 1 and abs(f_vals[-1] - sum(f_vals[:-1])) < 1: return round(f_vals[-1] / 10.764, 3)
-        return round(sum(f_vals) / 10.764, 3)
-    return 0.0
-
-def determine_config(area, t1, t2, t3):
-    if area == 0: return "N/A"
-    if area < t1: return "1 BHK"
-    elif area < t2: return "2 BHK"
-    elif area < t3: return "3 BHK"
-    else: return "4 BHK"
-
-def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
-    df.to_excel(writer, sheet_name=sheet_name, index=False)
-    worksheet = writer.sheets[sheet_name]
-    center_align = Alignment(horizontal='center', vertical='center')
-    thin_border = Border(
-        left=Side(style='thin', color='000000'),
-        right=Side(style='thin', color='000000'),
-        top=Side(style='thin', color='000000'),
-        bottom=Side(style='thin', color='000000')
-    )
-    colors = ["A2D2FF", "FFD6A5", "CAFFBF", "FDFFB6", "FFADAD", "BDB2FF", "9BF6FF"]
-    
-    color_idx = 0
-    start_row_prop = 2
-    start_row_cfg = 2
-    
-    for i in range(1, worksheet.max_row + 1):
-        for j in range(1, worksheet.max_column + 1):
-            cell = worksheet.cell(row=i, column=j)
-            cell.alignment = center_align
-            if is_summary: cell.border = thin_border
-
-    if is_summary:
-        for i in range(2, len(df) + 2):
-            curr_prop = df.iloc[i-2, 0]
-            next_prop = df.iloc[i-1, 0] if i-1 < len(df) else None
-            fill = PatternFill(start_color=colors[color_idx % len(colors)], end_color=colors[color_idx % len(colors)], fill_type="solid")
-            for col in range(1, len(df.columns) + 1):
-                worksheet.cell(row=i, column=col).fill = fill
-            if curr_prop != next_prop:
-                if i > start_row_prop: worksheet.merge_cells(start_row=start_row_prop, start_column=1, end_row=i, end_column=1)
-                color_idx += 1
-                start_row_prop = i + 1
-            curr_cfg_key = [df.iloc[i-2, 0], df.iloc[i-2, 1]]
-            next_cfg_key = [df.iloc[i-1, 0], df.iloc[i-1, 1]] if i-1 < len(df) else None
-            if curr_cfg_key != next_cfg_key:
-                if i > start_row_cfg: worksheet.merge_cells(start_row=start_row_cfg, start_column=2, end_row=i, end_column=2)
-                start_row_cfg = i + 1
-
-# --- STREAMLIT UI ---
-st.set_page_config(page_title="Real Estate Dashboard", layout="wide")
-st.sidebar.header("Calculation Settings")
-loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
-t1 = st.sidebar.number_input("1 BHK Threshold (<)", value=600)
-t2 = st.sidebar.number_input("2 BHK Threshold (<)", value=850)
-t3 = st.sidebar.number_input("3 BHK Threshold (<)", value=1100)
-
-uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type="xlsx")
-
-if uploaded_file:
-    df = pd.read_excel(uploaded_file)
-    clean_cols = {c.lower().strip(): c for c in df.columns}
-    desc_col, cons_col, prop_col = clean_cols.get('property description'), clean_cols.get('consideration value'), clean_cols.get('property')
-    
-    if desc_col and cons_col and prop_col:
-        with st.spinner('Calculating and Formatting...'):
-            df['Carpet Area (SQ.MT)'] = df[desc_col].apply(extract_area_logic)
-            df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
-            df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
-            df['APR'] = df.apply(lambda r: round(r[cons_col]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
-            df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
-            
-            valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop_col, 'Configuration', 'Carpet Area (SQ.FT)'])
-            summary = valid_df.groupby([prop_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
-                Min_APR=('APR', 'min'), Max_APR=('APR', 'max'), Avg_APR=('APR', 'mean'),
-                Median_APR=('APR', 'median'),
-                Mode_APR=('APR', lambda x: x.mode().iloc[0] if not x.mode().empty else 0),
-                Property_Count=(prop_col, 'count')
-            ).reset_index()
-            summary.columns = ['Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property']
-            summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']] = summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']].round(3)
-
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                apply_excel_formatting(df, writer, 'Raw Data', is_summary=False)
-                apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
-            
-            st.success("Analysis Complete!")
-            st.download_button(label="📥 Download Formatted Excel Report", data=output.getvalue(), file_name="Property_Analysis_Professional.xlsx")
+                # Download Button
+                csv = result_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download Updated CSV",
+                    data=csv,
+                    file_name="updated_real_estate_data.csv",
+                    mime="text/csv",
+                )
+else:
+    if not gmaps_key:
+        st.warning("Please enter your Google Maps API Key in the sidebar.")
+    if not project_location:
+        st.warning("Please enter your Project Location in the sidebar.")
+    if not uploaded_file:
+        st.info("Upload an Excel/CSV file to begin.")
