@@ -14,14 +14,19 @@ st.title("🏙️ Project Proximity & AI Market Dashboard")
 st.markdown("Powered by **Gemini AI** for accurate pricing and configurations.")
 
 # --- SIDEBAR CONFIG ---
+# --- Update this section in your app.py ---
 with st.sidebar:
     st.header("1. API & Project Info")
-    # Get your free key at https://aistudio.google.com/
-    gemini_key = st.text_input("Enter Gemini API Key", type="password")
     
-    # Pre-filled with your project: Shubh Tristar, Mundhwa
+    # Check if key is in Streamlit Secrets, otherwise ask user
+    if "GEMINI_API_KEY" in st.secrets:
+        gemini_key = st.secrets["GEMINI_API_KEY"]
+        st.success("API Key loaded from Secrets!")
+    else:
+        gemini_key = st.text_input("Enter Gemini API Key", type="password")
+        st.info("Tip: Add GEMINI_API_KEY to your Streamlit Cloud secrets to skip this.")
+    
     project_addr = st.text_input("Project Location", value="Shubh Tristar, Mundhwa Rd, Pune 411036")
-    
     st.divider()
     run_btn = st.button("🚀 Analyze Societies")
 
